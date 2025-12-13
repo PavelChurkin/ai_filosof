@@ -104,39 +104,37 @@ class Database:
     async def get_or_create_chat_state(self, chat_id: str, chat_type: str = 'private') -> ChatState:
         """Получить или создать состояние чата"""
         async with self.async_session() as session:
-            async with session.begin():
-                # Пытаемся найти существующее состояние
-                from sqlalchemy import select
-                result = await session.execute(
-                    select(ChatState).where(ChatState.chat_id == chat_id)
+            # Пытаемся найти существующее состояние
+            from sqlalchemy import select
+            result = await session.execute(
+                select(ChatState).where(ChatState.chat_id == chat_id)
+            )
+            chat_state = result.scalar_one_or_none()
+
+            if not chat_state:
+                # Создаем новое состояние
+                chat_state = ChatState(
+                    chat_id=chat_id,
+                    chat_type=chat_type,
+                    is_active=True
                 )
-                chat_state = result.scalar_one_or_none()
+                session.add(chat_state)
+                await session.commit()
+                await session.refresh(chat_state)
+                logger.info(f"Создано новое состояние для чата {chat_id}")
 
-                if not chat_state:
-                    # Создаем новое состояние
-                    chat_state = ChatState(
-                        chat_id=chat_id,
-                        chat_type=chat_type,
-                        is_active=True
-                    )
-                    session.add(chat_state)
-                    await session.commit()
-                    await session.refresh(chat_state)
-                    logger.info(f"Создано новое состояние для чата {chat_id}")
-
-                return chat_state
+            return chat_state
 
     async def update_chat_state(self, chat_id: str, **kwargs):
         """Обновить состояние чата"""
         async with self.async_session() as session:
-            async with session.begin():
-                from sqlalchemy import select, update
-                await session.execute(
-                    update(ChatState)
-                    .where(ChatState.chat_id == chat_id)
-                    .values(**kwargs, updated_at=datetime.utcnow())
-                )
-                await session.commit()
+            from sqlalchemy import select, update
+            await session.execute(
+                update(ChatState)
+                .where(ChatState.chat_id == chat_id)
+                .values(**kwargs, updated_at=datetime.utcnow())
+            )
+            await session.commit()
 
     async def save_thought(self, chat_id: str, step1_words: str = None,
                           step1_image: str = None, step2_question: str = None,
@@ -144,33 +142,31 @@ class Database:
                           was_paid: bool = False) -> Thought:
         """Сохранить новую мысль"""
         async with self.async_session() as session:
-            async with session.begin():
-                thought = Thought(
-                    chat_id=chat_id,
-                    step1_words=step1_words,
-                    step1_image=step1_image,
-                    step2_question=step2_question,
-                    step3_answer=step3_answer,
-                    is_published=is_published,
-                    was_paid=was_paid,
-                    published_at=datetime.utcnow() if is_published else None
-                )
-                session.add(thought)
-                await session.commit()
-                await session.refresh(thought)
-                return thought
+            thought = Thought(
+                chat_id=chat_id,
+                step1_words=step1_words,
+                step1_image=step1_image,
+                step2_question=step2_question,
+                step3_answer=step3_answer,
+                is_published=is_published,
+                was_paid=was_paid,
+                published_at=datetime.utcnow() if is_published else None
+            )
+            session.add(thought)
+            await session.commit()
+            await session.refresh(thought)
+            return thought
 
     async def update_thought(self, thought_id: int, **kwargs):
         """Обновить мысль"""
         async with self.async_session() as session:
-            async with session.begin():
-                from sqlalchemy import update
-                await session.execute(
-                    update(Thought)
-                    .where(Thought.id == thought_id)
-                    .values(**kwargs)
-                )
-                await session.commit()
+            from sqlalchemy import update
+            await session.execute(
+                update(Thought)
+                .where(Thought.id == thought_id)
+                .values(**kwargs)
+            )
+            await session.commit()
 
     async def get_latest_thought(self, chat_id: str) -> Optional[Thought]:
         """Получить последнюю мысль для чата"""
@@ -197,32 +193,30 @@ class Database:
                            amount: int, payment_type: str, payment_metadata: dict = None) -> Payment:
         """Создать запись о платеже"""
         async with self.async_session() as session:
-            async with session.begin():
-                payment = Payment(
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    payment_id=payment_id,
-                    amount=amount,
-                    status='pending',
-                    payment_type=payment_type,
-                    payment_metadata=payment_metadata
-                )
-                session.add(payment)
-                await session.commit()
-                await session.refresh(payment)
-                return payment
+            payment = Payment(
+                chat_id=chat_id,
+                user_id=user_id,
+                payment_id=payment_id,
+                amount=amount,
+                status='pending',
+                payment_type=payment_type,
+                payment_metadata=payment_metadata
+            )
+            session.add(payment)
+            await session.commit()
+            await session.refresh(payment)
+            return payment
 
     async def update_payment_status(self, payment_id: str, status: str):
         """Обновить статус платежа"""
         async with self.async_session() as session:
-            async with session.begin():
-                from sqlalchemy import update
-                await session.execute(
-                    update(Payment)
-                    .where(Payment.payment_id == payment_id)
-                    .values(status=status, updated_at=datetime.utcnow())
-                )
-                await session.commit()
+            from sqlalchemy import update
+            await session.execute(
+                update(Payment)
+                .where(Payment.payment_id == payment_id)
+                .values(status=status, updated_at=datetime.utcnow())
+            )
+            await session.commit()
 
     async def get_payment(self, payment_id: str) -> Optional[Payment]:
         """Получить платеж по ID"""
@@ -246,29 +240,28 @@ class Database:
                                      next_generation_time: datetime = None):
         """Обновить глобальное расписание"""
         async with self.async_session() as session:
-            async with session.begin():
-                from sqlalchemy import select
-                result = await session.execute(select(GlobalSchedule).limit(1))
-                schedule = result.scalar_one_or_none()
+            from sqlalchemy import select
+            result = await session.execute(select(GlobalSchedule).limit(1))
+            schedule = result.scalar_one_or_none()
 
-                if not schedule:
-                    # Создаем новое расписание
-                    schedule = GlobalSchedule(
-                        next_publish_time=next_publish_time,
-                        next_generation_time=next_generation_time
-                    )
-                    session.add(schedule)
-                else:
-                    # Обновляем существующее
-                    if next_publish_time is not None:
-                        schedule.next_publish_time = next_publish_time
-                    if next_generation_time is not None:
-                        schedule.next_generation_time = next_generation_time
-                    schedule.updated_at = datetime.utcnow()
+            if not schedule:
+                # Создаем новое расписание
+                schedule = GlobalSchedule(
+                    next_publish_time=next_publish_time,
+                    next_generation_time=next_generation_time
+                )
+                session.add(schedule)
+            else:
+                # Обновляем существующее
+                if next_publish_time is not None:
+                    schedule.next_publish_time = next_publish_time
+                if next_generation_time is not None:
+                    schedule.next_generation_time = next_generation_time
+                schedule.updated_at = datetime.utcnow()
 
-                await session.commit()
-                await session.refresh(schedule)
-                return schedule
+            await session.commit()
+            await session.refresh(schedule)
+            return schedule
 
     async def get_all_groups_and_channels(self) -> List[ChatState]:
         """Получить все активные группы и каналы (не приватные чаты)"""
