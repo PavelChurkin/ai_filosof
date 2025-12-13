@@ -87,7 +87,7 @@ class PaymentService:
                 payment_id=payment.id,
                 amount=amount * 100,  # В копейках
                 payment_type=payment_type,
-                metadata={
+                payment_metadata={
                     "confirmation_url": payment.confirmation.confirmation_url
                 }
             )

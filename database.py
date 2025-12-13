@@ -74,7 +74,7 @@ class Payment(Base):
     currency = Column(String, default='RUB')
     status = Column(String, nullable=False)  # pending, succeeded, canceled
     payment_type = Column(String, nullable=False)  # 'urgent_thought', 'reveal_question', 'reveal_prompt'
-    metadata = Column(JSON, nullable=True)  # Дополнительные данные
+    payment_metadata = Column(JSON, nullable=True)  # Дополнительные данные
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -194,7 +194,7 @@ class Database:
             return list(result.scalars().all())
 
     async def create_payment(self, chat_id: str, user_id: str, payment_id: str,
-                           amount: int, payment_type: str, metadata: dict = None) -> Payment:
+                           amount: int, payment_type: str, payment_metadata: dict = None) -> Payment:
         """Создать запись о платеже"""
         async with self.async_session() as session:
             async with session.begin():
@@ -205,7 +205,7 @@ class Database:
                     amount=amount,
                     status='pending',
                     payment_type=payment_type,
-                    metadata=metadata
+                    payment_metadata=payment_metadata
                 )
                 session.add(payment)
                 await session.commit()

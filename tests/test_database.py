@@ -146,7 +146,7 @@ async def test_create_payment(test_db):
         payment_id=payment_id,
         amount=10000,  # 100 rubles in kopecks
         payment_type="urgent_thought",
-        metadata={"test": "data"}
+        payment_metadata={"test": "data"}
     )
 
     assert payment is not None
