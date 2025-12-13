@@ -664,6 +664,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Пожертвование
         await handle_donation_payment(query, chat_id, user_id)
 
+    elif callback_data == "donate_custom":
+        # Пользователь хочет ввести свою сумму
+        await query.message.reply_text(
+            "💬 Пожалуйста, введите сумму пожертвования (минимум 10₽):"
+        )
+        # Здесь в будущем нужно добавить обработчик текстовых сообщений для получения суммы
+        # Пока просто информируем пользователя
+
     elif callback_data.startswith("donate_"):
         # Пожертвование с конкретной суммой
         amount = int(callback_data.split("_")[1])
@@ -683,7 +691,21 @@ async def handle_urgent_thought_payment(query, chat_id: str, user_id: str):
 
         # Отправляем результат
         message = f"🧠 Срочная философская мысль:\n\n{thought.step3_answer}"
-        await query.message.reply_text(message)
+
+        # Добавляем inline кнопки
+        keyboard = [
+            [
+                InlineKeyboardButton("💭 Срочная мысль", callback_data="pay_urgent"),
+                InlineKeyboardButton("❓ Какой был вопрос?", callback_data="pay_question")
+            ],
+            [
+                InlineKeyboardButton("📜 Раскрыть промпт", callback_data="pay_prompt"),
+                InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.message.reply_text(message, reply_markup=reply_markup)
 
         # Помечаем как опубликованную
         await db.update_thought(thought.id, is_published=True, published_at=datetime.utcnow())
