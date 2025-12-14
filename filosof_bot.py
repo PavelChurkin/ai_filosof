@@ -143,7 +143,7 @@ def get_openai_response(prompt: str, max_retries: int = 3) -> str:
         timeout=30
     )
 
-    system_message = f"Ты бот философ ({get_moscow_time().ctime()})"
+    system_message = f"Ты размышляющий бот" # бот, с изменяющейся ролью (смотри контекст для определения роли)
 
     for attempt in range(max_retries):
         try:
