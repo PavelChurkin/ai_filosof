@@ -632,6 +632,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Добавляем inline кнопки
     keyboard = [
         [InlineKeyboardButton("💭 Срочная мысль", callback_data="pay_urgent")],
+        [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
+        [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
         [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -676,6 +678,137 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Пожертвование с конкретной суммой
         amount = int(callback_data.split("_")[1])
         await process_donation(query, chat_id, user_id, amount)
+
+    elif callback_data == "custom_words":
+        # Запрос пользовательских случайных слов
+        context.user_data['awaiting_input'] = 'custom_words'
+        await query.message.reply_text(
+            "🎲 Введите свои случайные слова (через запятую или пробел):\n\n"
+            "Например: дерево, океан, мечта, время"
+        )
+
+    elif callback_data == "your_question":
+        # Запрос вопроса от пользователя
+        context.user_data['awaiting_input'] = 'your_question'
+        await query.message.reply_text(
+            "❓ Введите ваш вопрос, на который вы хотите получить философский ответ:"
+        )
+
+
+async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений для кастомных запросов"""
+    chat_id = str(update.effective_chat.id)
+    user_text = update.message.text
+
+    # Проверяем, ожидается ли ввод
+    if 'awaiting_input' not in context.user_data:
+        return
+
+    input_type = context.user_data.get('awaiting_input')
+
+    if input_type == 'custom_words':
+        # Обработка пользовательских слов
+        await handle_custom_words_generation(update, context, user_text, chat_id)
+
+    elif input_type == 'your_question':
+        # Обработка вопроса пользователя
+        await handle_question_generation(update, context, user_text, chat_id)
+
+    # Очищаем состояние ожидания
+    context.user_data.pop('awaiting_input', None)
+
+
+async def handle_custom_words_generation(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                        user_words: str, chat_id: str):
+    """Генерация мысли на основе пользовательских слов (3 этапа, без сохранения в БД)"""
+    try:
+        await update.message.reply_text("⏳ Генерирую философскую мысль на основе ваших слов...")
+
+        # Парсим слова пользователя
+        import re
+        words_list = re.split(r'[,\s]+', user_words.strip())
+        words_list = [w.strip() for w in words_list if w.strip()]
+
+        if len(words_list) < 2:
+            await update.message.reply_text(
+                "❌ Пожалуйста, введите хотя бы 2 слова.\n\n"
+                "Попробуйте снова, нажав кнопку '🎲 Свои случайные слова'"
+            )
+            return
+
+        # Форматируем список слов
+        formatted_words = ', '.join(words_list)
+
+        # Получаем event loop для async операций
+        loop = asyncio.get_event_loop()
+
+        # Этап 1: Формируем образ и роль на основе слов пользователя
+        prompt1 = f"""Даны следующие слова: {formatted_words}
+
+На основе этих слов сформируй яркий образ или метафору и определи роль мыслителя.
+Ответ должен быть не более 100 слов."""
+
+        step1_image = await loop.run_in_executor(None, get_openai_response, prompt1)
+
+        # Этап 2: Формируем вопрос на основе образа
+        prompt2 = f"""{step1_image}
+
+Сформируй философский вопрос на основе этого образа."""
+
+        step2_question = await loop.run_in_executor(None, get_openai_response, prompt2)
+
+        # Этап 3: Отвечаем на вопрос (это будет опубликовано)
+        prompt3 = f"""{step2_question}
+
+Ответь на этот вопрос, не больше 100 слов."""
+
+        step3_answer = await loop.run_in_executor(None, get_openai_response, prompt3)
+
+        # Отправляем результат пользователю (БЕЗ сохранения в БД)
+        message = f"🧠 Философская мысль на основе ваших слов:\n\n{step3_answer}"
+
+        await update.message.reply_text(message)
+
+        logger.info(f"Сгенерирована мысль на основе пользовательских слов для чата {chat_id} (не сохранена в БД)")
+
+    except Exception as e:
+        logger.error(f"Ошибка генерации мысли на основе пользовательских слов: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при генерации. Попробуйте позже.")
+
+
+async def handle_question_generation(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                     user_question: str, chat_id: str):
+    """Генерация ответа на вопрос пользователя (только этап 3, без сохранения в БД)"""
+    try:
+        await update.message.reply_text("⏳ Генерирую философский ответ на ваш вопрос...")
+
+        if len(user_question.strip()) < 5:
+            await update.message.reply_text(
+                "❌ Вопрос слишком короткий.\n\n"
+                "Попробуйте снова, нажав кнопку '❓ Ваш вопрос'"
+            )
+            return
+
+        # Получаем event loop для async операций
+        loop = asyncio.get_event_loop()
+
+        # Сразу генерируем ответ (это соответствует 3 этапу обычной генерации)
+        prompt = f"""{user_question}
+
+Ответь на этот вопрос философски, не больше 100 слов."""
+
+        answer = await loop.run_in_executor(None, get_openai_response, prompt)
+
+        # Отправляем результат пользователю (БЕЗ сохранения в БД)
+        message = f"💭 Философский ответ на ваш вопрос:\n\n{answer}"
+
+        await update.message.reply_text(message)
+
+        logger.info(f"Сгенерирован ответ на вопрос пользователя для чата {chat_id} (не сохранён в БД)")
+
+    except Exception as e:
+        logger.error(f"Ошибка генерации ответа на вопрос: {e}")
+        await update.message.reply_text("❌ Произошла ошибка при генерации. Попробуйте позже.")
 
 
 async def handle_urgent_thought_payment(query, chat_id: str, user_id: str):
@@ -845,6 +978,7 @@ async def main():
         # Регистрация обработчиков
         app.add_handler(CommandHandler("start", start_command))
         app.add_handler(CallbackQueryHandler(button_callback))
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
         # Создание и инициализация планировщика
         scheduler = ThoughtScheduler(app)
