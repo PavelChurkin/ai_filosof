@@ -49,10 +49,8 @@ async def test_update_chat_state(test_db):
     chat_id = "test_chat_789"
     chat_state = await test_db.get_or_create_chat_state(chat_id, "private")
 
-    next_publish = datetime.utcnow()
     await test_db.update_chat_state(
         chat_id,
-        next_publish_time=next_publish,
         is_active=False
     )
 

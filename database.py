@@ -23,23 +23,11 @@ class ChatState(Base):
     id = Column(Integer, primary_key=True)
     chat_id = Column(String, unique=True, nullable=False, index=True)  # Telegram chat_id
     chat_type = Column(String, nullable=False)  # 'private' or 'group' or 'channel'
-    next_publish_time = Column(DateTime, nullable=True)  # Только для приватных чатов
-    next_generation_time = Column(DateTime, nullable=True)  # Только для приватных чатов
     is_active = Column(Boolean, default=True)
     # Система лимитов запросов
     last_request_date = Column(DateTime, nullable=True)  # Дата последнего запроса для отслеживания смены дня
     bonus_requests = Column(Integer, default=3)  # Оставшиеся запросы (минимум 3 в день, пожертвование: 50₽ = +3)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class GlobalSchedule(Base):
-    """Глобальное расписание для всех групп и каналов"""
-    __tablename__ = 'global_schedule'
-
-    id = Column(Integer, primary_key=True)
-    next_publish_time = Column(DateTime, nullable=True)
-    next_generation_time = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -230,42 +218,6 @@ class Database:
                 select(Payment).where(Payment.payment_id == payment_id)
             )
             return result.scalar_one_or_none()
-
-    async def get_global_schedule(self) -> Optional[GlobalSchedule]:
-        """Получить глобальное расписание"""
-        async with self.async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(
-                select(GlobalSchedule).limit(1)
-            )
-            return result.scalar_one_or_none()
-
-    async def update_global_schedule(self, next_publish_time: datetime = None,
-                                     next_generation_time: datetime = None):
-        """Обновить глобальное расписание"""
-        async with self.async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(select(GlobalSchedule).limit(1))
-            schedule = result.scalar_one_or_none()
-
-            if not schedule:
-                # Создаем новое расписание
-                schedule = GlobalSchedule(
-                    next_publish_time=next_publish_time,
-                    next_generation_time=next_generation_time
-                )
-                session.add(schedule)
-            else:
-                # Обновляем существующее
-                if next_publish_time is not None:
-                    schedule.next_publish_time = next_publish_time
-                if next_generation_time is not None:
-                    schedule.next_generation_time = next_generation_time
-                schedule.updated_at = datetime.utcnow()
-
-            await session.commit()
-            await session.refresh(schedule)
-            return schedule
 
     async def get_all_groups_and_channels(self) -> List[ChatState]:
         """Получить все активные группы и каналы (не приватные чаты)"""
