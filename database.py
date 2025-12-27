@@ -90,24 +90,36 @@ class Database:
         """Инициализация базы данных"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            # Миграция: добавляем колонку last_request_date если её нет
-            await conn.run_sync(self._migrate_add_last_request_date)
+            # Миграция: добавляем недостающие колонки если их нет
+            await conn.run_sync(self._migrate_chat_states_columns)
         logger.info("База данных инициализирована")
 
-    def _migrate_add_last_request_date(self, conn):
-        """Миграция: добавление колонки last_request_date если её нет"""
+    def _migrate_chat_states_columns(self, conn):
+        """Миграция: добавление всех недостающих колонок в таблицу chat_states"""
         from sqlalchemy import inspect, text
 
-        inspector = inspect(conn)
-        columns = [col['name'] for col in inspector.get_columns('chat_states')]
+        try:
+            inspector = inspect(conn)
+            existing_columns = [col['name'] for col in inspector.get_columns('chat_states')]
+            logger.info(f"Текущие колонки в chat_states: {existing_columns}")
 
-        if 'last_request_date' not in columns:
-            logger.info("Добавление колонки last_request_date в таблицу chat_states")
-            if 'sqlite' in self.database_url:
-                conn.execute(text('ALTER TABLE chat_states ADD COLUMN last_request_date DATETIME'))
-            else:
-                conn.execute(text('ALTER TABLE chat_states ADD COLUMN last_request_date TIMESTAMP'))
-            logger.info("Колонка last_request_date успешно добавлена")
+            # Определяем колонки, которые должны быть в таблице
+            required_columns = {
+                'last_request_date': 'DATETIME' if 'sqlite' in self.database_url else 'TIMESTAMP',
+                'bonus_requests': 'INTEGER DEFAULT 3'
+            }
+
+            # Добавляем недостающие колонки
+            for column_name, column_type in required_columns.items():
+                if column_name not in existing_columns:
+                    logger.info(f"Добавление колонки {column_name} в таблицу chat_states")
+                    conn.execute(text(f'ALTER TABLE chat_states ADD COLUMN {column_name} {column_type}'))
+                    logger.info(f"Колонка {column_name} успешно добавлена")
+                else:
+                    logger.debug(f"Колонка {column_name} уже существует")
+
+        except Exception as e:
+            logger.error(f"Ошибка при миграции таблицы chat_states: {e}")
 
     async def get_or_create_chat_state(self, chat_id: str, chat_type: str = 'private') -> ChatState:
         """Получить или создать состояние чата"""
