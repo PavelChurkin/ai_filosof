@@ -26,10 +26,9 @@ class ChatState(Base):
     next_publish_time = Column(DateTime, nullable=True)  # Только для приватных чатов
     next_generation_time = Column(DateTime, nullable=True)  # Только для приватных чатов
     is_active = Column(Boolean, default=True)
-    # Счетчики запросов (сбрасываются ежедневно)
-    daily_requests_count = Column(Integer, default=0)  # Общее количество запросов за день
-    last_request_date = Column(DateTime, nullable=True)  # Дата последнего запроса
-    has_donated = Column(Boolean, default=False)  # Флаг: пользователь делал пожертвование
+    # Система лимитов запросов
+    last_request_date = Column(DateTime, nullable=True)  # Дата последнего запроса для отслеживания смены дня
+    bonus_requests = Column(Integer, default=3)  # Оставшиеся запросы (минимум 3 в день, пожертвование: 50₽ = +3)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -116,11 +115,12 @@ class Database:
             chat_state = result.scalar_one_or_none()
 
             if not chat_state:
-                # Создаем новое состояние
+                # Создаем новое состояние с базовым лимитом 3 запроса
                 chat_state = ChatState(
                     chat_id=chat_id,
                     chat_type=chat_type,
-                    is_active=True
+                    is_active=True,
+                    bonus_requests=3  # Базовый дневной лимит
                 )
                 session.add(chat_state)
                 await session.commit()
@@ -295,6 +295,13 @@ class Database:
         """
         Проверяет и обновляет дневной лимит запросов для чата
 
+        Логика:
+        - bonus_requests хранит оставшиеся бонусные запросы из пожертвований
+        - Каждый запрос расходует 1 бонусный запрос (если есть)
+        - При сбросе дня (новый день):
+          * Если bonus_requests > 3: ничего не делаем (достаточно запросов)
+          * Если bonus_requests < 3: восстанавливаем до 3 (минимальный дневной лимит)
+
         Args:
             chat_id: ID чата
 
@@ -315,44 +322,54 @@ class Database:
             today = date.today()
             last_request_date = chat_state.last_request_date.date() if chat_state.last_request_date else None
 
-            # Сбрасываем счетчик если новый день
+            # Сбрасываем/восстанавливаем лимит если новый день
             if last_request_date != today:
-                chat_state.daily_requests_count = 0
+                # Если bonus_requests < 3, восстанавливаем до минимума 3
+                if chat_state.bonus_requests < 3:
+                    chat_state.bonus_requests = 3
+                # Если >= 3, оставляем как есть (не добавляем ничего)
+
                 chat_state.last_request_date = datetime.utcnow()
 
-            # Определяем лимит: 3 для обычных, 6 для пожертвовавших
-            max_requests = 6 if chat_state.has_donated else 3
-            current_count = chat_state.daily_requests_count
-
-            if current_count >= max_requests:
+            # Проверяем, есть ли доступные запросы
+            if chat_state.bonus_requests <= 0:
                 return False, 0
 
-            # Увеличиваем счетчик
-            chat_state.daily_requests_count += 1
-            chat_state.last_request_date = datetime.utcnow()
+            # Расходуем один запрос
+            chat_state.bonus_requests -= 1
             chat_state.updated_at = datetime.utcnow()
 
             await session.commit()
 
-            remaining = max_requests - chat_state.daily_requests_count
+            remaining = chat_state.bonus_requests
             return True, remaining
 
-    async def mark_user_as_donor(self, chat_id: str):
+    async def add_bonus_requests(self, chat_id: str, amount: int):
         """
-        Помечает пользователя как сделавшего пожертвование
+        Добавляет бонусные запросы пользователю за пожертвование
+        50₽ = +3 запроса
 
         Args:
             chat_id: ID чата
+            amount: Сумма пожертвования в рублях
         """
+        # Вычисляем количество бонусных запросов: каждые 50₽ дают 3 запроса
+        bonus_to_add = (amount // 50) * 3
+
         async with self.async_session() as session:
-            from sqlalchemy import update
-            await session.execute(
-                update(ChatState)
-                .where(ChatState.chat_id == chat_id)
-                .values(has_donated=True, updated_at=datetime.utcnow())
+            from sqlalchemy import select
+            result = await session.execute(
+                select(ChatState).where(ChatState.chat_id == chat_id)
             )
-            await session.commit()
-            logger.info(f"Чат {chat_id} помечен как донор")
+            chat_state = result.scalar_one_or_none()
+
+            if chat_state:
+                chat_state.bonus_requests += bonus_to_add
+                chat_state.updated_at = datetime.utcnow()
+                await session.commit()
+                logger.info(f"Чат {chat_id} получил +{bonus_to_add} бонусных запросов (всего: {chat_state.bonus_requests})")
+            else:
+                logger.error(f"Чат {chat_id} не найден для добавления бонусных запросов")
 
     async def close(self):
         """Закрыть соединение с базой данных"""

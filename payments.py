@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # Цены в рублях
 PRICES = {
-    'donation': 100,  # Пожертвование (минимальная сумма)
+    'donation': 50,  # Пожертвование (минимальная сумма)
 }
 
 
@@ -213,8 +213,17 @@ class PaymentService:
                 logger.error(f"Неверная подпись для платежа {inv_id}")
                 return False
 
+            # Получаем chat_id из дополнительных параметров
+            chat_id = shp_params.get('Shp_chat_id')
+
             # Обновляем статус в БД
             await self.db.update_payment_status(str(inv_id), 'succeeded')
+
+            # Добавляем бонусные запросы пользователю (50₽ = +3 запроса)
+            if chat_id:
+                amount_rubles = int(out_sum)
+                await self.db.add_bonus_requests(chat_id, amount_rubles)
+                logger.info(f"Добавлены бонусные запросы для чата {chat_id}, сумма {amount_rubles}₽")
 
             logger.info(f"Result callback обработан: платеж {inv_id}, статус succeeded")
             return True

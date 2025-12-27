@@ -47,7 +47,7 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 MAIN_CHANNEL_ID = "@filosofiya_ot_bota"  # Основной канал для публикаций
 
 # Цены в рублях
-PRICE_DONATION_MIN = 100  # Минимальная сумма пожертвования
+PRICE_DONATION_MIN = 50  # Минимальная сумма пожертвования
 
 # Лимиты запросов
 DAILY_REQUEST_LIMIT = 3  # Максимум запросов в день для обычных пользователей
@@ -507,12 +507,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ Следующая мысль появится примерно {format_moscow_time(next_publish)} МСК
 
 Вы можете:
+⚡ Получить срочную мысль прямо сейчас
 🎲 Создать мысль на основе своих случайных слов
 ❓ Задать свой вопрос и получить философский ответ
 💝 Поддержать проект пожертвованием
 
-⚡ Лимит: {DAILY_REQUEST_LIMIT} запроса в день (срочная мысль, свои слова, свой вопрос)
-💎 После пожертвования: +{DAILY_REQUEST_LIMIT} дополнительных запросов
+⚡ Лимит: минимум {DAILY_REQUEST_LIMIT} запроса в день
+💎 Пожертвование: 50₽ = +3 запроса к балансу
+💡 Каждый день восстанавливается до {DAILY_REQUEST_LIMIT} запросов (если меньше)
 """
     else:
         welcome_text = f"""
@@ -531,6 +533,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Добавляем inline кнопки (разные для приватных чатов и групп)
     if chat_type == 'private':
         keyboard = [
+            [InlineKeyboardButton("⚡ Срочная мысль", callback_data="urgent_thought")],
             [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
             [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
             [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
@@ -568,6 +571,34 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Пожертвование с конкретной суммой
         amount = int(callback_data.split("_")[1])
         await process_donation(query, chat_id, user_id, amount)
+
+    elif callback_data == "urgent_thought":
+        # Срочная мысль - генерация мысли по стандартному алгоритму (тратит лимит)
+        # Проверка лимита
+        can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
+        if not can_proceed:
+            await query.message.reply_text(
+                "❌ Вы исчерпали дневной лимит запросов.\n\n"
+                "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+            )
+            return
+
+        await query.message.reply_text("⏳ Генерирую срочную философскую мысль...\n\n"
+                                       f"⚡ Осталось запросов сегодня: {remaining}")
+
+        # Генерируем мысль
+        from filosof_bot import ThoughtGenerator
+        generator = ThoughtGenerator()
+        thought = await generator.generate_thought_3_steps(chat_id, was_paid=False)
+
+        # Отправляем результат с кнопками раскрытия деталей
+        message = f"🧠 Философская мысль:\n\n{thought.step3_answer}"
+        keyboard = [
+            [InlineKeyboardButton("❓ Какой был вопрос?", callback_data=f"reveal_question_{thought.id}")],
+            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(message, reply_markup=reply_markup)
 
     elif callback_data == "custom_words":
         # Запрос пользовательских случайных слов
@@ -873,13 +904,13 @@ async def handle_donation_payment(query, chat_id: str, user_id: str):
         # Предлагаем варианты сумм
         keyboard = [
             [
+                InlineKeyboardButton("50₽", callback_data="donate_50"),
                 InlineKeyboardButton("100₽", callback_data="donate_100"),
-                InlineKeyboardButton("200₽", callback_data="donate_200"),
-                InlineKeyboardButton("500₽", callback_data="donate_500")
+                InlineKeyboardButton("200₽", callback_data="donate_200")
             ],
             [
-                InlineKeyboardButton("1000₽", callback_data="donate_1000"),
-                InlineKeyboardButton("2000₽", callback_data="donate_2000")
+                InlineKeyboardButton("500₽", callback_data="donate_500"),
+                InlineKeyboardButton("1000₽", callback_data="donate_1000")
             ],
             [InlineKeyboardButton("💬 Ввести свою сумму", callback_data="donate_custom")]
         ]
@@ -923,13 +954,18 @@ async def process_donation(query, chat_id: str, user_id: str, amount: int):
             keyboard = [[InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)]]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
+            # Вычисляем количество бонусных запросов
+            bonus_requests = (amount // 50) * 3
+
             message = f"""💝 Спасибо за желание поддержать проект!
 
 Сумма: {amount}₽
 
 После успешной оплаты вы получите:
-✨ +{DAILY_REQUEST_LIMIT} дополнительных запросов в день
-🎁 Навсегда!
+✨ +{bonus_requests} запросов к вашему балансу
+
+💡 Каждый день восстанавливается минимум 3 запроса.
+Пока у вас больше 3 запросов - восстановление не происходит.
 
 Нажмите кнопку ниже для оплаты:"""
 
