@@ -22,7 +22,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 
-from database import Database, ChatState, Thought, GlobalSchedule
+from database import Database, ChatState, Thought
 
 # Настройка логирования
 class MoscowTimeFormatter(logging.Formatter):
@@ -42,9 +42,7 @@ for handler in logging.root.handlers:
     handler.setFormatter(MoscowTimeFormatter())
 
 # Константы
-GENERATION_OFFSET = 600  # 10 минут до публикации
 MOSCOW_TZ = pytz.timezone('Europe/Moscow')
-MAIN_CHANNEL_ID = "@filosofiya_ot_bota"  # Основной канал для публикаций
 
 # Цены в рублях
 PRICE_DONATION_MIN = 50  # Минимальная сумма пожертвования
@@ -80,23 +78,6 @@ def format_moscow_time(dt: datetime = None, format_str: str = "%Y-%m-%d %H:%M:%S
     if dt is None:
         dt = get_moscow_time()
     return dt.strftime(format_str)
-
-
-def generate_next_publish_time() -> datetime:
-    """Генерирует время следующей публикации (завтра в случайное время)"""
-    now_moscow = get_moscow_time()
-    tomorrow = now_moscow + timedelta(days=1)
-
-    publish_hour = random.randint(0, 23)
-    publish_minute = random.randint(0, 59)
-    publish_second = random.randint(0, 59)
-
-    publish_time = MOSCOW_TZ.localize(datetime(
-        tomorrow.year, tomorrow.month, tomorrow.day,
-        publish_hour, publish_minute, publish_second
-    ))
-
-    return publish_time
 
 
 def optimized_choice_lst(lst: list, max_iterations: int = 20000) -> Tuple[list, list]:
@@ -263,195 +244,6 @@ class ThoughtGenerator:
             raise
 
 
-class ThoughtScheduler:
-    """Планировщик для генерации и публикации мыслей во всех чатах"""
-
-    def __init__(self, bot_app: Application):
-        self.bot_app = bot_app
-        self.generator = ThoughtGenerator()
-        self.is_generating = False
-        self.global_thought_id = None  # ID глобальной мысли для групп/каналов
-
-    async def initialize(self):
-        """Инициализация планировщика"""
-        logger.info("Инициализация планировщика мыслей...")
-
-        # Инициализация глобального расписания для всех чатов (включая приватные)
-        global_schedule = await db.get_global_schedule()
-        if not global_schedule or not global_schedule.next_publish_time:
-            next_publish = generate_next_publish_time()
-            next_gen = next_publish - timedelta(seconds=GENERATION_OFFSET)
-            await db.update_global_schedule(
-                next_publish_time=next_publish,
-                next_generation_time=next_gen
-            )
-            logger.info(
-                f"Глобальное расписание: установлено время публикации {format_moscow_time(next_publish)}"
-            )
-
-        logger.info("Все чаты будут получать одинаковую мысль в одно и то же время")
-
-    async def run(self):
-        """Основной цикл планировщика"""
-        logger.info("Запуск основного цикла планировщика...")
-
-        while not stop_flag:
-            try:
-                now = get_moscow_time()
-
-                # Обработка глобального расписания для всех чатов
-                await self._process_global_schedule(now)
-
-                await asyncio.sleep(1)
-
-            except Exception as e:
-                logger.error(f"Ошибка в цикле планировщика: {e}")
-                await asyncio.sleep(5)
-
-    async def _process_global_schedule(self, now: datetime):
-        """Обработка глобального расписания для всех чатов"""
-        global_schedule = await db.get_global_schedule()
-        if not global_schedule:
-            return
-
-        # Конвертируем времена в aware datetime
-        if global_schedule.next_generation_time:
-            if global_schedule.next_generation_time.tzinfo is None:
-                next_gen = MOSCOW_TZ.localize(global_schedule.next_generation_time)
-            else:
-                next_gen = global_schedule.next_generation_time
-        else:
-            next_gen = None
-
-        if global_schedule.next_publish_time:
-            if global_schedule.next_publish_time.tzinfo is None:
-                next_pub = MOSCOW_TZ.localize(global_schedule.next_publish_time)
-            else:
-                next_pub = global_schedule.next_publish_time
-        else:
-            next_pub = None
-
-        # Проверяем, пора ли генерировать глобальную мысль
-        if next_gen and now >= next_gen and self.global_thought_id is None:
-            logger.info("Генерация глобальной мысли для всех чатов")
-            # Используем специальный chat_id для глобальных мыслей
-            thought = await self.generator.generate_thought_3_steps("global", was_paid=False)
-            self.global_thought_id = thought.id
-
-            # Сбрасываем время генерации
-            await db.update_global_schedule(next_generation_time=None)
-
-        # Проверяем, пора ли публиковать глобальную мысль
-        if next_pub and now >= next_pub and self.global_thought_id is not None:
-            await self._publish_global_thought()
-
-    async def _publish_global_thought(self):
-        """Публикация глобальной мысли во всех чатах (группы, каналы и приватные)"""
-        try:
-            if self.global_thought_id is None:
-                logger.warning("Нет глобальной мысли для публикации")
-                return
-
-            # Получаем мысль из БД
-            from sqlalchemy import select
-            async with db.async_session() as session:
-                result = await session.execute(
-                    select(Thought).where(Thought.id == self.global_thought_id)
-                )
-                global_thought = result.scalar_one_or_none()
-
-            if not global_thought:
-                logger.error(f"Мысль с ID {self.global_thought_id} не найдена")
-                return
-
-            # Генерируем следующее время публикации
-            next_publish = generate_next_publish_time()
-            next_gen = next_publish - timedelta(seconds=GENERATION_OFFSET)
-
-            # Формируем сообщение для групп/каналов (с вопросом)
-            message_groups = f"❓ Вопрос:\n{global_thought.step2_question}\n\n" \
-                            f"💭 Ответ:\n{global_thought.step3_answer}\n\n" \
-                            f"⏰ Следующая мысль будет {format_moscow_time(next_publish)} МСК"
-
-            # Формируем сообщение для приватных чатов (без вопроса)
-            message_private = f"🧠 Философская мысль:\n\n{global_thought.step3_answer}\n\n" \
-                             f"⏰ Следующая мысль будет {format_moscow_time(next_publish)} МСК"
-
-            # Кнопки для групп/каналов (только пожертвование)
-            keyboard_groups = [
-                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-            ]
-            reply_markup_groups = InlineKeyboardMarkup(keyboard_groups)
-
-            # Кнопки для приватных чатов (только пожертвование)
-            keyboard_private = [
-                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-            ]
-            reply_markup_private = InlineKeyboardMarkup(keyboard_private)
-
-            # Публикуем в основной канал
-            try:
-                await self.bot_app.bot.send_message(
-                    chat_id=MAIN_CHANNEL_ID,
-                    text=message_groups,
-                    reply_markup=reply_markup_groups
-                )
-                logger.info(f"Мысль опубликована в основном канале {MAIN_CHANNEL_ID}")
-            except Exception as e:
-                logger.error(f"Ошибка публикации в основной канал {MAIN_CHANNEL_ID}: {e}")
-
-            # Получаем все активные группы и каналы
-            groups_and_channels = await db.get_all_groups_and_channels()
-
-            # Публикуем во все зарегистрированные группы/каналы
-            for chat_state in groups_and_channels:
-                try:
-                    await self.bot_app.bot.send_message(
-                        chat_id=chat_state.chat_id,
-                        text=message_groups,
-                        reply_markup=reply_markup_groups
-                    )
-                    logger.info(f"Мысль опубликована в группе/канале {chat_state.chat_id}")
-                except Exception as e:
-                    logger.error(f"Ошибка публикации в {chat_state.chat_id}: {e}")
-
-            # Получаем все приватные чаты
-            private_chats = await db.get_all_private_chats()
-
-            # Публикуем во все приватные чаты
-            for chat_state in private_chats:
-                try:
-                    await self.bot_app.bot.send_message(
-                        chat_id=chat_state.chat_id,
-                        text=message_private,
-                        reply_markup=reply_markup_private
-                    )
-                    logger.info(f"Мысль опубликована в приватном чате {chat_state.chat_id}")
-                except Exception as e:
-                    logger.error(f"Ошибка публикации в приватный чат {chat_state.chat_id}: {e}")
-
-            # Обновляем статус мысли
-            await db.update_thought(
-                global_thought.id,
-                is_published=True,
-                published_at=datetime.utcnow()
-            )
-
-            # Обновляем глобальное расписание
-            await db.update_global_schedule(
-                next_publish_time=next_publish,
-                next_generation_time=next_gen
-            )
-
-            # Сбрасываем ID глобальной мысли
-            self.global_thought_id = None
-
-            logger.info("Глобальная мысль успешно опубликована во всех чатах")
-
-        except Exception as e:
-            logger.error(f"Ошибка публикации глобальной мысли: {e}")
-
-
 # Telegram Bot Handlers
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,46 +261,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Создаем или получаем состояние чата
     chat_state = await db.get_or_create_chat_state(chat_id, chat_type)
 
-    # Получаем время следующей публикации
-    if chat_type == 'private':
-        # Для приватных чатов используем индивидуальное расписание
-        if not chat_state.next_publish_time:
-            next_publish = generate_next_publish_time()
-            next_gen = next_publish - timedelta(seconds=GENERATION_OFFSET)
+    # Получаем информацию о балансе
+    balance = chat_state.bonus_requests if chat_state.bonus_requests is not None else DAILY_REQUEST_LIMIT
 
-            await db.update_chat_state(
-                chat_id,
-                next_publish_time=next_publish,
-                next_generation_time=next_gen
-            )
-        else:
-            # Конвертируем в aware datetime если нужно
-            if chat_state.next_publish_time.tzinfo is None:
-                next_publish = MOSCOW_TZ.localize(chat_state.next_publish_time)
-            else:
-                next_publish = chat_state.next_publish_time
-    else:
-        # Для групп и каналов используем глобальное расписание
-        global_schedule = await db.get_global_schedule()
-        if global_schedule and global_schedule.next_publish_time:
-            if global_schedule.next_publish_time.tzinfo is None:
-                next_publish = MOSCOW_TZ.localize(global_schedule.next_publish_time)
-            else:
-                next_publish = global_schedule.next_publish_time
-        else:
-            next_publish = generate_next_publish_time()
-
-    # Формируем приветственное сообщение
-    if chat_type == 'private':
-        # Получаем информацию о балансе
-        balance = chat_state.bonus_requests if chat_state.bonus_requests is not None else DAILY_REQUEST_LIMIT
-
-        welcome_text = f"""
+    # Формируем приветственное сообщение (одинаковое для всех типов чатов)
+    welcome_text = f"""
 👋 Добро пожаловать в AI Filosof!
-
-Я буду делиться философскими мыслями раз в день в случайное время.
-
-⏰ Следующая мысль появится примерно {format_moscow_time(next_publish)} МСК
 
 💎 Ваш баланс запросов: {balance}
 
@@ -522,32 +280,14 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 💎 Пожертвование: 50₽ = +3 запроса к балансу
 💡 Каждый день восстанавливается до {DAILY_REQUEST_LIMIT} запросов (если меньше)
 """
-    else:
-        welcome_text = f"""
-👋 Добро пожаловать в AI Filosof!
 
-Я буду делиться философскими мыслями со всеми группами и каналами одновременно раз в день в случайное время.
-
-⏰ Следующая мысль появится примерно {format_moscow_time(next_publish)} МСК
-
-Вы можете:
-💝 Поддержать проект пожертвованием
-
-📢 Подписывайтесь на основной канал: {MAIN_CHANNEL_ID}
-"""
-
-    # Добавляем inline кнопки (разные для приватных чатов и групп)
-    if chat_type == 'private':
-        keyboard = [
-            [InlineKeyboardButton("⚡ Срочная мысль", callback_data="urgent_thought")],
-            [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
-            [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
-            [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-        ]
-    else:
-        keyboard = [
-            [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-        ]
+    # Добавляем inline кнопки (одинаковые для всех типов чатов)
+    keyboard = [
+        [InlineKeyboardButton("⚡ Срочная мысль", callback_data="urgent_thought")],
+        [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
+        [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
+        [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
+    ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
@@ -723,18 +463,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💝 Пожертвование увеличивает баланс запросов (50₽ = +3 запроса)"
         )
 
-        # Определяем, какие кнопки показывать
-        if update.effective_chat.type == "private":
-            keyboard = [
-                [InlineKeyboardButton("⚡ Срочная мысль", callback_data="urgent_thought")],
-                [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
-                [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
-                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-            ]
-        else:
-            keyboard = [
-                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-            ]
+        # Одинаковые кнопки для всех типов чатов
+        keyboard = [
+            [InlineKeyboardButton("⚡ Срочная мысль", callback_data="urgent_thought")],
+            [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
+            [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
+            [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         bot = query.get_bot()
@@ -1162,18 +897,15 @@ async def main():
         app.add_handler(CallbackQueryHandler(button_callback))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
-        # Создание и инициализация планировщика
-        scheduler = ThoughtScheduler(app)
-        await scheduler.initialize()
-
-        # Запуск бота и планировщика параллельно
+        # Запуск бота
         async with app:
             await app.initialize()
             await app.start()
             await app.updater.start_polling()
 
-            # Запускаем планировщик
-            await scheduler.run()
+            # Ожидаем завершения
+            logger.info("Бот запущен и ожидает сообщений...")
+            await asyncio.Event().wait()
 
     except KeyboardInterrupt:
         logger.info("Бот остановлен по Ctrl+C")
