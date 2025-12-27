@@ -26,6 +26,10 @@ class ChatState(Base):
     next_publish_time = Column(DateTime, nullable=True)  # Только для приватных чатов
     next_generation_time = Column(DateTime, nullable=True)  # Только для приватных чатов
     is_active = Column(Boolean, default=True)
+    # Счетчики запросов (сбрасываются ежедневно)
+    daily_requests_count = Column(Integer, default=0)  # Общее количество запросов за день
+    last_request_date = Column(DateTime, nullable=True)  # Дата последнего запроса
+    has_donated = Column(Boolean, default=False)  # Флаг: пользователь делал пожертвование
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -286,6 +290,69 @@ class Database:
                 )
             )
             return list(result.scalars().all())
+
+    async def check_and_update_daily_limit(self, chat_id: str) -> tuple[bool, int]:
+        """
+        Проверяет и обновляет дневной лимит запросов для чата
+
+        Args:
+            chat_id: ID чата
+
+        Returns:
+            Tuple (can_make_request: bool, remaining_requests: int)
+        """
+        from datetime import date
+        async with self.async_session() as session:
+            from sqlalchemy import select
+            result = await session.execute(
+                select(ChatState).where(ChatState.chat_id == chat_id)
+            )
+            chat_state = result.scalar_one_or_none()
+
+            if not chat_state:
+                return False, 0
+
+            today = date.today()
+            last_request_date = chat_state.last_request_date.date() if chat_state.last_request_date else None
+
+            # Сбрасываем счетчик если новый день
+            if last_request_date != today:
+                chat_state.daily_requests_count = 0
+                chat_state.last_request_date = datetime.utcnow()
+
+            # Определяем лимит: 3 для обычных, 6 для пожертвовавших
+            max_requests = 6 if chat_state.has_donated else 3
+            current_count = chat_state.daily_requests_count
+
+            if current_count >= max_requests:
+                return False, 0
+
+            # Увеличиваем счетчик
+            chat_state.daily_requests_count += 1
+            chat_state.last_request_date = datetime.utcnow()
+            chat_state.updated_at = datetime.utcnow()
+
+            await session.commit()
+
+            remaining = max_requests - chat_state.daily_requests_count
+            return True, remaining
+
+    async def mark_user_as_donor(self, chat_id: str):
+        """
+        Помечает пользователя как сделавшего пожертвование
+
+        Args:
+            chat_id: ID чата
+        """
+        async with self.async_session() as session:
+            from sqlalchemy import update
+            await session.execute(
+                update(ChatState)
+                .where(ChatState.chat_id == chat_id)
+                .values(has_donated=True, updated_at=datetime.utcnow())
+            )
+            await session.commit()
+            logger.info(f"Чат {chat_id} помечен как донор")
 
     async def close(self):
         """Закрыть соединение с базой данных"""

@@ -23,7 +23,6 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 
 from database import Database, ChatState, Thought, GlobalSchedule
-from yookassa import Configuration, Payment as YooPayment
 
 # Настройка логирования
 class MoscowTimeFormatter(logging.Formatter):
@@ -48,10 +47,11 @@ MOSCOW_TZ = pytz.timezone('Europe/Moscow')
 MAIN_CHANNEL_ID = "@filosofiya_ot_bota"  # Основной канал для публикаций
 
 # Цены в рублях
-PRICE_URGENT_THOUGHT = 100  # Срочная генерация мысли
-PRICE_REVEAL_QUESTION = 50  # Раскрыть вопрос
-PRICE_REVEAL_PROMPT = 200  # Раскрыть промпт
-PRICE_DONATION_MIN = 10  # Минимальная сумма пожертвования (все этапы)
+PRICE_DONATION_MIN = 100  # Минимальная сумма пожертвования
+
+# Лимиты запросов
+DAILY_REQUEST_LIMIT = 3  # Максимум запросов в день для обычных пользователей
+DAILY_REQUEST_LIMIT_DONOR = 6  # Максимум запросов в день для пожертвовавших
 
 # Глобальные переменные
 db: Optional[Database] = None
@@ -64,8 +64,9 @@ def load_env_keys() -> Dict[str, Optional[str]]:
     return {
         'OPENAI_API_KEY': os.getenv('OPENAI_API_KEY'),
         'TG_TOKEN': os.getenv('TG_TOKEN'),
-        'YOOKASSA_SHOP_ID': os.getenv('YOOKASSA_SHOP_ID'),
-        'YOOKASSA_SECRET_KEY': os.getenv('YOOKASSA_SECRET_KEY'),
+        'ROBOKASSA_MERCHANT_LOGIN': os.getenv('ROBOKASSA_MERCHANT_LOGIN'),
+        'ROBOKASSA_PASSWORD1': os.getenv('ROBOKASSA_PASSWORD1'),
+        'ROBOKASSA_PASSWORD2': os.getenv('ROBOKASSA_PASSWORD2'),
     }
 
 
@@ -375,26 +376,15 @@ class ThoughtScheduler:
             message_private = f"🧠 Философская мысль:\n\n{global_thought.step3_answer}\n\n" \
                              f"⏰ Следующая мысль будет {format_moscow_time(next_publish)} МСК"
 
-            # Кнопки для групп/каналов
+            # Кнопки для групп/каналов (только пожертвование)
             keyboard_groups = [
-                [
-                    InlineKeyboardButton("💭 Срочная мысль", callback_data="pay_urgent"),
-                    InlineKeyboardButton("📜 Раскрыть промпт", callback_data="pay_prompt")
-                ],
                 [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
             ]
             reply_markup_groups = InlineKeyboardMarkup(keyboard_groups)
 
-            # Кнопки для приватных чатов
+            # Кнопки для приватных чатов (только пожертвование)
             keyboard_private = [
-                [
-                    InlineKeyboardButton("💭 Срочная мысль", callback_data="pay_urgent"),
-                    InlineKeyboardButton("❓ Какой был вопрос?", callback_data="pay_question")
-                ],
-                [
-                    InlineKeyboardButton("📜 Раскрыть промпт", callback_data="pay_prompt"),
-                    InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")
-                ]
+                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
             ]
             reply_markup_private = InlineKeyboardMarkup(keyboard_private)
 
@@ -517,10 +507,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ Следующая мысль появится примерно {format_moscow_time(next_publish)} МСК
 
 Вы можете:
-💭 Получить мысль срочно (платно)
-❓ Узнать вопрос, на который отвечает мысль (платно)
-📜 Раскрыть весь процесс генерации (платно)
+🎲 Создать мысль на основе своих случайных слов
+❓ Задать свой вопрос и получить философский ответ
 💝 Поддержать проект пожертвованием
+
+⚡ Лимит: {DAILY_REQUEST_LIMIT} запроса в день (срочная мысль, свои слова, свой вопрос)
+💎 После пожертвования: +{DAILY_REQUEST_LIMIT} дополнительных запросов
 """
     else:
         welcome_text = f"""
@@ -531,20 +523,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ⏰ Следующая мысль появится примерно {format_moscow_time(next_publish)} МСК
 
 Вы можете:
-💭 Получить мысль срочно (платно)
-📜 Раскрыть весь процесс генерации (платно)
 💝 Поддержать проект пожертвованием
 
 📢 Подписывайтесь на основной канал: {MAIN_CHANNEL_ID}
 """
 
-    # Добавляем inline кнопки
-    keyboard = [
-        [InlineKeyboardButton("💭 Срочная мысль", callback_data="pay_urgent")],
-        [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
-        [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
-        [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
-    ]
+    # Добавляем inline кнопки (разные для приватных чатов и групп)
+    if chat_type == 'private':
+        keyboard = [
+            [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
+            [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
+            [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
+        ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
@@ -559,29 +553,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     callback_data = query.data
 
-    if callback_data == "pay_urgent":
-        # Срочная генерация мысли
-        await handle_urgent_thought_payment(query, chat_id, user_id)
-
-    elif callback_data == "pay_question":
-        # Раскрыть вопрос
-        await handle_reveal_question_payment(query, chat_id, user_id)
-
-    elif callback_data == "pay_prompt":
-        # Раскрыть промпт
-        await handle_reveal_prompt_payment(query, chat_id, user_id)
-
-    elif callback_data == "pay_donation":
+    if callback_data == "pay_donation":
         # Пожертвование
         await handle_donation_payment(query, chat_id, user_id)
 
     elif callback_data == "donate_custom":
         # Пользователь хочет ввести свою сумму
+        context.user_data['awaiting_input'] = 'donation_amount'
         await query.message.reply_text(
-            "💬 Пожалуйста, введите сумму пожертвования (минимум 10₽):"
+            f"💬 Пожалуйста, введите сумму пожертвования (минимум {PRICE_DONATION_MIN}₽):"
         )
-        # Здесь в будущем нужно добавить обработчик текстовых сообщений для получения суммы
-        # Пока просто информируем пользователя
 
     elif callback_data.startswith("donate_"):
         # Пожертвование с конкретной суммой
@@ -590,26 +571,46 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif callback_data == "custom_words":
         # Запрос пользовательских случайных слов
+        # Проверка лимита
+        can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
+        if not can_proceed:
+            await query.message.reply_text(
+                "❌ Вы исчерпали дневной лимит запросов.\n\n"
+                "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+            )
+            return
+
         context.user_data['awaiting_input'] = 'custom_words'
         await query.message.reply_text(
-            "🎲 Введите свои случайные слова (через запятую или пробел):\n\n"
-            "Например: дерево, океан, мечта, время"
+            f"🎲 Введите свои случайные слова (через запятую или пробел):\n\n"
+            f"Например: дерево, океан, мечта, время\n\n"
+            f"⚡ Осталось запросов сегодня: {remaining}"
         )
 
     elif callback_data == "your_question":
         # Запрос вопроса от пользователя
+        # Проверка лимита
+        can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
+        if not can_proceed:
+            await query.message.reply_text(
+                "❌ Вы исчерпали дневной лимит запросов.\n\n"
+                "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+            )
+            return
+
         context.user_data['awaiting_input'] = 'your_question'
         await query.message.reply_text(
-            "❓ Введите ваш вопрос, на который вы хотите получить философский ответ:"
+            f"❓ Введите ваш вопрос, на который вы хотите получить философский ответ:\n\n"
+            f"⚡ Осталось запросов сегодня: {remaining}"
         )
 
     elif callback_data.startswith("reveal_question_"):
-        # Раскрыть вопрос для конкретной мысли
+        # Раскрыть вопрос для конкретной мысли (теперь бесплатно)
         thought_id = int(callback_data.split("_")[2])
         await handle_reveal_specific_question(query, thought_id)
 
     elif callback_data.startswith("reveal_prompt_"):
-        # Раскрыть промпт для конкретной мысли
+        # Раскрыть промпт для конкретной мысли (теперь бесплатно)
         thought_id = int(callback_data.split("_")[2])
         await handle_reveal_specific_prompt(query, thought_id)
 
@@ -617,6 +618,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик текстовых сообщений для кастомных запросов"""
     chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
     user_text = update.message.text
 
     # Проверяем, ожидается ли ввод
@@ -632,6 +634,49 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     elif input_type == 'your_question':
         # Обработка вопроса пользователя
         await handle_question_generation(update, context, user_text, chat_id)
+
+    elif input_type == 'donation_amount':
+        # Обработка суммы пожертвования
+        try:
+            amount = int(user_text.strip())
+            if amount < PRICE_DONATION_MIN:
+                await update.message.reply_text(
+                    f"❌ Минимальная сумма пожертвования: {PRICE_DONATION_MIN}₽\n\n"
+                    f"Попробуйте еще раз."
+                )
+                return
+            # Создаем платеж с пользовательской суммой
+            from payments import PaymentService, create_donation_payment
+            keys = load_env_keys()
+            payment_service = PaymentService(
+                merchant_login=keys['ROBOKASSA_MERCHANT_LOGIN'],
+                password1=keys['ROBOKASSA_PASSWORD1'],
+                password2=keys['ROBOKASSA_PASSWORD2'],
+                db=db,
+                is_test=False
+            )
+            payment_url = await create_donation_payment(
+                payment_service, chat_id, user_id, amount
+            )
+            if payment_url:
+                keyboard = [[InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    f"💝 Спасибо за желание поддержать проект!\n\n"
+                    f"Сумма: {amount}₽\n\n"
+                    f"Нажмите кнопку ниже для оплаты:",
+                    reply_markup=reply_markup
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка создания платежа. Попробуйте позже."
+                )
+        except ValueError:
+            await update.message.reply_text(
+                f"❌ Пожалуйста, введите корректную сумму (число).\n\n"
+                f"Минимум: {PRICE_DONATION_MIN}₽"
+            )
+            return
 
     # Очищаем состояние ожидания
     context.user_data.pop('awaiting_input', None)
@@ -820,94 +865,6 @@ async def handle_reveal_specific_prompt(query, thought_id: int):
         await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
 
 
-async def handle_urgent_thought_payment(query, chat_id: str, user_id: str):
-    """Обработка платежа за срочную мысль"""
-    try:
-        # В реальной версии здесь должна быть интеграция с YooKassa
-        # Для демонстрации просто генерируем мысль
-
-        await query.message.reply_text("⏳ Генерирую срочную мысль...")
-
-        generator = ThoughtGenerator()
-        thought = await generator.generate_thought_3_steps(chat_id, was_paid=True)
-
-        # Отправляем результат
-        message = f"🧠 Срочная философская мысль:\n\n{thought.step3_answer}"
-
-        # Добавляем inline кнопки
-        keyboard = [
-            [
-                InlineKeyboardButton("💭 Срочная мысль", callback_data="pay_urgent"),
-                InlineKeyboardButton("❓ Какой был вопрос?", callback_data="pay_question")
-            ],
-            [
-                InlineKeyboardButton("📜 Раскрыть промпт", callback_data="pay_prompt"),
-                InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.message.reply_text(message, reply_markup=reply_markup)
-
-        # Помечаем как опубликованную
-        await db.update_thought(thought.id, is_published=True, published_at=datetime.utcnow())
-
-    except Exception as e:
-        logger.error(f"Ошибка обработки срочной мысли: {e}")
-        await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-
-
-async def handle_reveal_question_payment(query, chat_id: str, user_id: str):
-    """Обработка платежа за раскрытие вопроса"""
-    try:
-        # Получаем последнюю опубликованную мысль
-        latest_thought = await db.get_latest_thought(chat_id)
-
-        if not latest_thought or not latest_thought.is_published:
-            await query.message.reply_text("❌ Нет опубликованных мыслей для раскрытия вопроса.")
-            return
-
-        # В реальной версии здесь проверка платежа
-        message = f"❓ Вопрос, на который отвечает последняя мысль:\n\n{latest_thought.step2_question}"
-        await query.message.reply_text(message)
-
-    except Exception as e:
-        logger.error(f"Ошибка раскрытия вопроса: {e}")
-        await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-
-
-async def handle_reveal_prompt_payment(query, chat_id: str, user_id: str):
-    """Обработка платежа за раскрытие промпта"""
-    try:
-        # Получаем последнюю опубликованную мысль
-        latest_thought = await db.get_latest_thought(chat_id)
-
-        if not latest_thought or not latest_thought.is_published:
-            await query.message.reply_text("❌ Нет опубликованных мыслей для раскрытия промпта.")
-            return
-
-        # В реальной версии здесь проверка платежа
-        message = f"""📜 Полный процесс генерации последней мысли:
-
-📝 Шаг 1 - Исходные слова:
-{latest_thought.step1_words}
-
-🎨 Шаг 2 - Образ и роль:
-{latest_thought.step1_image}
-
-❓ Шаг 3 - Вопрос:
-{latest_thought.step2_question}
-
-💭 Шаг 4 - Ответ:
-{latest_thought.step3_answer}
-"""
-        await query.message.reply_text(message)
-
-    except Exception as e:
-        logger.error(f"Ошибка раскрытия промпта: {e}")
-        await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
-
-
 async def handle_donation_payment(query, chat_id: str, user_id: str):
     """Обработка пожертвования - показываем варианты сумм"""
     try:
@@ -916,13 +873,13 @@ async def handle_donation_payment(query, chat_id: str, user_id: str):
         # Предлагаем варианты сумм
         keyboard = [
             [
-                InlineKeyboardButton("50₽", callback_data="donate_50"),
                 InlineKeyboardButton("100₽", callback_data="donate_100"),
-                InlineKeyboardButton("200₽", callback_data="donate_200")
+                InlineKeyboardButton("200₽", callback_data="donate_200"),
+                InlineKeyboardButton("500₽", callback_data="donate_500")
             ],
             [
-                InlineKeyboardButton("500₽", callback_data="donate_500"),
-                InlineKeyboardButton("1000₽", callback_data="donate_1000")
+                InlineKeyboardButton("1000₽", callback_data="donate_1000"),
+                InlineKeyboardButton("2000₽", callback_data="donate_2000")
             ],
             [InlineKeyboardButton("💬 Ввести свою сумму", callback_data="donate_custom")]
         ]
@@ -944,18 +901,43 @@ async def process_donation(query, chat_id: str, user_id: str, amount: int):
             )
             return
 
-        # В реальной версии здесь интеграция с YooKassa
-        # Пока просто подтверждаем
-        message = f"""💝 Спасибо за ваше пожертвование {amount}₽!
+        # Интеграция с Robokassa
+        from payments import PaymentService, create_donation_payment
+        keys = load_env_keys()
 
-Ваша поддержка помогает развивать проект.
+        payment_service = PaymentService(
+            merchant_login=keys['ROBOKASSA_MERCHANT_LOGIN'],
+            password1=keys['ROBOKASSA_PASSWORD1'],
+            password2=keys['ROBOKASSA_PASSWORD2'],
+            db=db,
+            is_test=False
+        )
 
-🙏 Мы ценим вашу помощь!
-"""
-        await query.message.reply_text(message)
+        payment_url = await create_donation_payment(
+            payment_service, chat_id, user_id, amount
+        )
 
-        # Логируем в БД (в будущем здесь будет реальный платеж)
-        logger.info(f"Пожертвование от пользователя {user_id}: {amount}₽")
+        if payment_url:
+            # Помечаем пользователя как донора (будет активировано после успешной оплаты)
+            # Пока просто создаем платеж
+            keyboard = [[InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            message = f"""💝 Спасибо за желание поддержать проект!
+
+Сумма: {amount}₽
+
+После успешной оплаты вы получите:
+✨ +{DAILY_REQUEST_LIMIT} дополнительных запросов в день
+🎁 Навсегда!
+
+Нажмите кнопку ниже для оплаты:"""
+
+            await query.message.reply_text(message, reply_markup=reply_markup)
+        else:
+            await query.message.reply_text(
+                "❌ Ошибка создания платежа. Попробуйте позже."
+            )
 
     except Exception as e:
         logger.error(f"Ошибка обработки пожертвования: {e}")
