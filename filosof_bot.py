@@ -202,6 +202,7 @@ class ThoughtGenerator:
         2. Образ → вопрос
         3. Вопрос → ответ
         """
+        global db
         try:
             # Шаг 0: Генерация случайных слов
             sample_size = random.randint(100, 20000)
@@ -561,10 +562,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_donation_payment(query, chat_id, user_id)
 
     elif callback_data == "donate_custom":
+        # Удаляем предыдущее сообщение
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
         # Пользователь хочет ввести свою сумму
         context.user_data['awaiting_input'] = 'donation_amount'
-        await query.message.reply_text(
-            f"💬 Пожалуйста, введите сумму пожертвования (минимум {PRICE_DONATION_MIN}₽):"
+        bot = query.get_bot()
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"💬 Пожалуйста, введите сумму пожертвования (минимум {PRICE_DONATION_MIN}₽):\n\n"
+                 f"ℹ️ Каждые {PRICE_DONATION_MIN}₽ дают +3 запроса к вашему балансу"
         )
 
     elif callback_data.startswith("donate_"):
@@ -573,18 +582,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_donation(query, chat_id, user_id, amount)
 
     elif callback_data == "urgent_thought":
+        # Удаляем предыдущее сообщение
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+
         # Срочная мысль - генерация мысли по стандартному алгоритму (тратит лимит)
         # Проверка лимита
         can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
+        bot = query.get_bot()
         if not can_proceed:
-            await query.message.reply_text(
-                "❌ Вы исчерпали дневной лимит запросов.\n\n"
-                "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Вы исчерпали дневной лимит запросов.\n\n"
+                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
             )
             return
 
-        await query.message.reply_text("⏳ Генерирую срочную философскую мысль...\n\n"
-                                       f"⚡ Осталось запросов сегодня: {remaining}")
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"⏳ Генерирую срочную философскую мысль...\n\n"
+                 f"⚡ Осталось запросов сегодня: {remaining}"
+        )
 
         # Генерируем мысль
         from filosof_bot import ThoughtGenerator
@@ -594,46 +614,104 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Отправляем результат с кнопками раскрытия деталей
         message = f"🧠 Философская мысль:\n\n{thought.step3_answer}"
         keyboard = [
-            [InlineKeyboardButton("❓ Какой был вопрос?", callback_data=f"reveal_question_{thought.id}")],
-            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")]
+            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text(message, reply_markup=reply_markup)
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
 
     elif callback_data == "custom_words":
+        # Удаляем предыдущее сообщение
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+
         # Запрос пользовательских случайных слов
         # Проверка лимита
         can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
+        bot = query.get_bot()
         if not can_proceed:
-            await query.message.reply_text(
-                "❌ Вы исчерпали дневной лимит запросов.\n\n"
-                "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Вы исчерпали дневной лимит запросов.\n\n"
+                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
             )
             return
 
         context.user_data['awaiting_input'] = 'custom_words'
-        await query.message.reply_text(
-            f"🎲 Введите свои случайные слова (через запятую или пробел):\n\n"
-            f"Например: дерево, океан, мечта, время\n\n"
-            f"⚡ Осталось запросов сегодня: {remaining}"
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"🎲 Введите свои случайные слова (через запятую или пробел):\n\n"
+                 f"Например: дерево, океан, мечта, время\n\n"
+                 f"⚡ Осталось запросов сегодня: {remaining}"
         )
 
     elif callback_data == "your_question":
+        # Удаляем предыдущее сообщение
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+
         # Запрос вопроса от пользователя
         # Проверка лимита
         can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
+        bot = query.get_bot()
         if not can_proceed:
-            await query.message.reply_text(
-                "❌ Вы исчерпали дневной лимит запросов.\n\n"
-                "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Вы исчерпали дневной лимит запросов.\n\n"
+                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
             )
             return
 
         context.user_data['awaiting_input'] = 'your_question'
-        await query.message.reply_text(
-            f"❓ Введите ваш вопрос, на который вы хотите получить философский ответ:\n\n"
-            f"⚡ Осталось запросов сегодня: {remaining}"
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"❓ Введите ваш вопрос, на который вы хотите получить философский ответ:\n\n"
+                 f"⚡ Осталось запросов сегодня: {remaining}"
         )
+
+    elif callback_data == "back_to_menu":
+        # Удаляем предыдущее сообщение
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+
+        # Вернуться в главное меню
+        # Получаем информацию о балансе для отображения
+        state = await db.get_or_create_chat_state(chat_id)
+
+        welcome_text = (
+            f"🤖 Привет! Я AI Filosof — бот, который генерирует философские мысли.\n\n"
+            f"⚡ Ваш баланс запросов: {state.bonus_requests}\n"
+            f"(Базовый лимит: {DAILY_REQUEST_LIMIT} запроса в день, восстанавливается ежедневно если баланс < {DAILY_REQUEST_LIMIT})\n\n"
+            f"Что бы вы хотели?\n\n"
+            f"💡 Бесплатные функции (с лимитом):\n"
+            f"• Срочная мысль — генерация по стандартному алгоритму\n"
+            f"• Свои случайные слова — генерация на основе ваших слов\n"
+            f"• Ваш вопрос — прямой ответ на ваш вопрос\n\n"
+            f"💝 Пожертвование увеличивает баланс запросов (50₽ = +3 запроса)"
+        )
+
+        # Определяем, какие кнопки показывать
+        if update.effective_chat.type == "private":
+            keyboard = [
+                [InlineKeyboardButton("⚡ Срочная мысль", callback_data="urgent_thought")],
+                [InlineKeyboardButton("🎲 Свои случайные слова", callback_data="custom_words")],
+                [InlineKeyboardButton("❓ Ваш вопрос", callback_data="your_question")],
+                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
+            ]
+        else:
+            keyboard = [
+                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")]
+            ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        bot = query.get_bot()
+        await bot.send_message(chat_id=chat_id, text=welcome_text, reply_markup=reply_markup)
 
     elif callback_data.startswith("reveal_question_"):
         # Раскрыть вопрос для конкретной мысли (теперь бесплатно)
@@ -690,11 +768,14 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                 payment_service, chat_id, user_id, amount
             )
             if payment_url:
+                # Рассчитываем количество бонусных запросов
+                bonus_requests = (amount // PRICE_DONATION_MIN) * 3
                 keyboard = [[InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 await update.message.reply_text(
                     f"💝 Спасибо за желание поддержать проект!\n\n"
-                    f"Сумма: {amount}₽\n\n"
+                    f"Сумма: {amount}₽\n"
+                    f"Вы получите: +{bonus_requests} запросов к балансу\n\n"
                     f"Нажмите кнопку ниже для оплаты:",
                     reply_markup=reply_markup
                 )
@@ -775,8 +856,8 @@ async def handle_custom_words_generation(update: Update, context: ContextTypes.D
 
         # Добавляем inline кнопки для раскрытия деталей
         keyboard = [
-            [InlineKeyboardButton("❓ Какой был вопрос?", callback_data=f"reveal_question_{thought.id}")],
-            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")]
+            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -826,7 +907,13 @@ async def handle_question_generation(update: Update, context: ContextTypes.DEFAU
         # Отправляем результат пользователю
         message = f"💭 Философский ответ на ваш вопрос:\n\n{answer}"
 
-        await update.message.reply_text(message)
+        # Добавляем кнопку "Назад"
+        keyboard = [
+            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(message, reply_markup=reply_markup)
 
         logger.info(f"Сгенерирован ответ на вопрос пользователя для чата {chat_id}, ID мысли: {thought.id}")
 
@@ -899,28 +986,50 @@ async def handle_reveal_specific_prompt(query, thought_id: int):
 async def handle_donation_payment(query, chat_id: str, user_id: str):
     """Обработка пожертвования - показываем варианты сумм"""
     try:
-        message = "💝 Выберите сумму пожертвования или введите свою:"
+        # Удаляем предыдущее сообщение
+        try:
+            await query.message.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить сообщение: {e}")
+
+        message = (
+            "💝 Выберите сумму пожертвования или введите свою:\n\n"
+            "ℹ️ Каждые 50₽ = +3 запроса к балансу\n"
+            "├ 50₽ → +3 запроса\n"
+            "├ 100₽ → +6 запросов\n"
+            "├ 200₽ → +12 запросов\n"
+            "├ 500₽ → +30 запросов\n"
+            "└ 1000₽ → +60 запросов"
+        )
 
         # Предлагаем варианты сумм
         keyboard = [
             [
-                InlineKeyboardButton("50₽", callback_data="donate_50"),
-                InlineKeyboardButton("100₽", callback_data="donate_100"),
-                InlineKeyboardButton("200₽", callback_data="donate_200")
+                InlineKeyboardButton("50₽ (+3)", callback_data="donate_50"),
+                InlineKeyboardButton("100₽ (+6)", callback_data="donate_100"),
+                InlineKeyboardButton("200₽ (+12)", callback_data="donate_200")
             ],
             [
-                InlineKeyboardButton("500₽", callback_data="donate_500"),
-                InlineKeyboardButton("1000₽", callback_data="donate_1000")
+                InlineKeyboardButton("500₽ (+30)", callback_data="donate_500"),
+                InlineKeyboardButton("1000₽ (+60)", callback_data="donate_1000")
             ],
             [InlineKeyboardButton("💬 Ввести свою сумму", callback_data="donate_custom")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await query.message.reply_text(message, reply_markup=reply_markup)
+        # Используем update.effective_chat для отправки нового сообщения
+        from telegram import Bot
+        bot = query.get_bot()
+        await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
 
     except Exception as e:
         logger.error(f"Ошибка обработки пожертвования: {e}")
-        await query.message.reply_text("❌ Произошла ошибка. Попробуйте позже.")
+        try:
+            from telegram import Bot
+            bot = query.get_bot()
+            await bot.send_message(chat_id=chat_id, text="❌ Произошла ошибка. Попробуйте позже.")
+        except:
+            pass
 
 
 async def process_donation(query, chat_id: str, user_id: str, amount: int):
