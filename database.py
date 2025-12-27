@@ -90,7 +90,24 @@ class Database:
         """Инициализация базы данных"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Миграция: добавляем колонку last_request_date если её нет
+            await conn.run_sync(self._migrate_add_last_request_date)
         logger.info("База данных инициализирована")
+
+    def _migrate_add_last_request_date(self, conn):
+        """Миграция: добавление колонки last_request_date если её нет"""
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(conn)
+        columns = [col['name'] for col in inspector.get_columns('chat_states')]
+
+        if 'last_request_date' not in columns:
+            logger.info("Добавление колонки last_request_date в таблицу chat_states")
+            if 'sqlite' in self.database_url:
+                conn.execute(text('ALTER TABLE chat_states ADD COLUMN last_request_date DATETIME'))
+            else:
+                conn.execute(text('ALTER TABLE chat_states ADD COLUMN last_request_date TIMESTAMP'))
+            logger.info("Колонка last_request_date успешно добавлена")
 
     async def get_or_create_chat_state(self, chat_id: str, chat_type: str = 'private') -> ChatState:
         """Получить или создать состояние чата"""
