@@ -500,12 +500,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Формируем приветственное сообщение
     if chat_type == 'private':
+        # Получаем информацию о балансе
+        balance = chat_state.bonus_requests if chat_state.bonus_requests is not None else DAILY_REQUEST_LIMIT
+
         welcome_text = f"""
 👋 Добро пожаловать в AI Filosof!
 
 Я буду делиться философскими мыслями раз в день в случайное время.
 
 ⏰ Следующая мысль появится примерно {format_moscow_time(next_publish)} МСК
+
+💎 Ваш баланс запросов: {balance}
 
 Вы можете:
 ⚡ Получить срочную мысль прямо сейчас
@@ -593,14 +598,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
         bot = query.get_bot()
         if not can_proceed:
+            keyboard = [
+                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await bot.send_message(
                 chat_id=chat_id,
                 text="❌ Вы исчерпали дневной лимит запросов.\n\n"
-                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!",
+                reply_markup=reply_markup
             )
             return
 
-        await bot.send_message(
+        loading_msg = await bot.send_message(
             chat_id=chat_id,
             text=f"⏳ Генерирую срочную философскую мысль...\n\n"
                  f"⚡ Осталось запросов сегодня: {remaining}"
@@ -609,6 +620,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Генерируем мысль
         generator = ThoughtGenerator()
         thought = await generator.generate_thought_3_steps(chat_id, was_paid=False)
+
+        # Удаляем loading сообщение
+        try:
+            await loading_msg.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить loading сообщение: {e}")
 
         # Отправляем результат с кнопками раскрытия деталей
         message = f"🧠 Философская мысль:\n\n{thought.step3_answer}"
@@ -631,10 +648,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
         bot = query.get_bot()
         if not can_proceed:
+            keyboard = [
+                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await bot.send_message(
                 chat_id=chat_id,
                 text="❌ Вы исчерпали дневной лимит запросов.\n\n"
-                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!",
+                reply_markup=reply_markup
             )
             return
 
@@ -658,10 +681,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         can_proceed, remaining = await db.check_and_update_daily_limit(chat_id)
         bot = query.get_bot()
         if not can_proceed:
+            keyboard = [
+                [InlineKeyboardButton("💝 Пожертвование", callback_data="pay_donation")],
+                [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
             await bot.send_message(
                 chat_id=chat_id,
                 text="❌ Вы исчерпали дневной лимит запросов.\n\n"
-                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!"
+                     "💝 Сделайте пожертвование, чтобы получить дополнительные запросы!",
+                reply_markup=reply_markup
             )
             return
 
@@ -797,7 +826,7 @@ async def handle_custom_words_generation(update: Update, context: ContextTypes.D
                                         user_words: str, chat_id: str):
     """Генерация мысли на основе пользовательских слов (3 этапа, сохранение в БД как срочная мысль)"""
     try:
-        await update.message.reply_text("⏳ Генерирую философскую мысль на основе ваших слов...")
+        loading_msg = await update.message.reply_text("⏳ Генерирую философскую мысль на основе ваших слов...")
 
         # Парсим слова пользователя
         import re
@@ -805,6 +834,12 @@ async def handle_custom_words_generation(update: Update, context: ContextTypes.D
         words_list = [w.strip() for w in words_list if w.strip()]
 
         if len(words_list) < 2:
+            # Удаляем loading сообщение перед отправкой ошибки
+            try:
+                await loading_msg.delete()
+            except Exception as e:
+                logger.warning(f"Не удалось удалить loading сообщение: {e}")
+
             await update.message.reply_text(
                 "❌ Пожалуйста, введите хотя бы 2 слова.\n\n"
                 "Попробуйте снова, нажав кнопку '🎲 Свои случайные слова'"
@@ -850,6 +885,12 @@ async def handle_custom_words_generation(update: Update, context: ContextTypes.D
             was_paid=False
         )
 
+        # Удаляем loading сообщение
+        try:
+            await loading_msg.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить loading сообщение: {e}")
+
         # Отправляем результат пользователю с inline кнопками
         message = f"🧠 Философская мысль на основе ваших слов:\n\n{step3_answer}"
 
@@ -873,9 +914,15 @@ async def handle_question_generation(update: Update, context: ContextTypes.DEFAU
                                      user_question: str, chat_id: str):
     """Генерация ответа на вопрос пользователя (только этап 3, сохранение в БД с '-' для пропущенных этапов)"""
     try:
-        await update.message.reply_text("⏳ Генерирую философский ответ на ваш вопрос...")
+        loading_msg = await update.message.reply_text("⏳ Генерирую философский ответ на ваш вопрос...")
 
         if len(user_question.strip()) < 5:
+            # Удаляем loading сообщение перед отправкой ошибки
+            try:
+                await loading_msg.delete()
+            except Exception as e:
+                logger.warning(f"Не удалось удалить loading сообщение: {e}")
+
             await update.message.reply_text(
                 "❌ Вопрос слишком короткий.\n\n"
                 "Попробуйте снова, нажав кнопку '❓ Ваш вопрос'"
@@ -902,6 +949,12 @@ async def handle_question_generation(update: Update, context: ContextTypes.DEFAU
             is_published=False,
             was_paid=False
         )
+
+        # Удаляем loading сообщение
+        try:
+            await loading_msg.delete()
+        except Exception as e:
+            logger.warning(f"Не удалось удалить loading сообщение: {e}")
 
         # Отправляем результат пользователю
         message = f"💭 Философский ответ на ваш вопрос:\n\n{answer}"
