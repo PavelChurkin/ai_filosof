@@ -630,8 +630,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Отправляем результат с кнопками раскрытия деталей
         message = f"🧠 Философская мысль:\n\n{thought.step3_answer}"
         keyboard = [
-            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
+            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await bot.send_message(chat_id=chat_id, text=message, reply_markup=reply_markup)
@@ -896,8 +895,7 @@ async def handle_custom_words_generation(update: Update, context: ContextTypes.D
 
         # Добавляем inline кнопки для раскрытия деталей
         keyboard = [
-            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")],
-            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
+            [InlineKeyboardButton("🔍 Раскрыть промпт", callback_data=f"reveal_prompt_{thought.id}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -959,13 +957,8 @@ async def handle_question_generation(update: Update, context: ContextTypes.DEFAU
         # Отправляем результат пользователю
         message = f"💭 Философский ответ на ваш вопрос:\n\n{answer}"
 
-        # Добавляем кнопку "Назад"
-        keyboard = [
-            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await update.message.reply_text(message, reply_markup=reply_markup)
+        # Отправляем без кнопок
+        await update.message.reply_text(message)
 
         logger.info(f"Сгенерирован ответ на вопрос пользователя для чата {chat_id}, ID мысли: {thought.id}")
 
