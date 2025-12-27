@@ -74,7 +74,16 @@ class Payment(Base):
 class Database:
     """Асинхронная обертка для работы с базой данных"""
 
-    def __init__(self, database_url: str = "sqlite+aiosqlite:///filosof.db"):
+    def __init__(self, database_url: str = None):
+        # Если URL не указан, используем абсолютный путь к файлу в текущей директории
+        if database_url is None:
+            import os
+            # Получаем абсолютный путь к директории со скриптом
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            db_path = os.path.join(script_dir, "filosof.db")
+            database_url = f"sqlite+aiosqlite:///{db_path}"
+            logger.info(f"Путь к базе данных: {db_path}")
+
         self.database_url = database_url
         self.engine = create_async_engine(
             database_url,
@@ -92,7 +101,25 @@ class Database:
             await conn.run_sync(Base.metadata.create_all)
             # Миграция: добавляем недостающие колонки если их нет
             await conn.run_sync(self._migrate_chat_states_columns)
+
         logger.info("База данных инициализирована")
+
+        # Проверяем и логируем существование файла базы данных
+        if 'sqlite' in self.database_url:
+            import os
+            # Извлекаем путь к файлу из URL
+            db_file_path = self.database_url.replace('sqlite+aiosqlite:///', '')
+            if os.path.exists(db_file_path):
+                file_size = os.path.getsize(db_file_path)
+                logger.info(f"✅ Файл базы данных создан: {db_file_path} ({file_size} байт)")
+            else:
+                logger.warning(f"⚠️ Файл базы данных не найден по пути: {db_file_path}")
+                logger.warning(f"   Текущая рабочая директория: {os.getcwd()}")
+                # Ищем файлы .db в текущей директории
+                for root, dirs, files in os.walk(os.getcwd()):
+                    for file in files:
+                        if file.endswith('.db'):
+                            logger.warning(f"   Найден .db файл: {os.path.join(root, file)}")
 
     def _migrate_chat_states_columns(self, conn):
         """Миграция: добавление всех недостающих колонок в таблицу chat_states"""
