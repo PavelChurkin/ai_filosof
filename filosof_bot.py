@@ -607,7 +607,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # Генерируем мысль
-        from filosof_bot import ThoughtGenerator
         generator = ThoughtGenerator()
         thought = await generator.generate_thought_3_steps(chat_id, was_paid=False)
 
@@ -1013,7 +1012,8 @@ async def handle_donation_payment(query, chat_id: str, user_id: str):
                 InlineKeyboardButton("500₽ (+30)", callback_data="donate_500"),
                 InlineKeyboardButton("1000₽ (+60)", callback_data="donate_1000")
             ],
-            [InlineKeyboardButton("💬 Ввести свою сумму", callback_data="donate_custom")]
+            [InlineKeyboardButton("💬 Ввести свою сумму", callback_data="donate_custom")],
+            [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
