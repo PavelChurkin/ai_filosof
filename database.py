@@ -23,23 +23,11 @@ class ChatState(Base):
     id = Column(Integer, primary_key=True)
     chat_id = Column(String, unique=True, nullable=False, index=True)  # Telegram chat_id
     chat_type = Column(String, nullable=False)  # 'private' or 'group' or 'channel'
-    next_publish_time = Column(DateTime, nullable=True)  # Только для приватных чатов
-    next_generation_time = Column(DateTime, nullable=True)  # Только для приватных чатов
     is_active = Column(Boolean, default=True)
     # Система лимитов запросов
     last_request_date = Column(DateTime, nullable=True)  # Дата последнего запроса для отслеживания смены дня
     bonus_requests = Column(Integer, default=3)  # Оставшиеся запросы (минимум 3 в день, пожертвование: 50₽ = +3)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-class GlobalSchedule(Base):
-    """Глобальное расписание для всех групп и каналов"""
-    __tablename__ = 'global_schedule'
-
-    id = Column(Integer, primary_key=True)
-    next_publish_time = Column(DateTime, nullable=True)
-    next_generation_time = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -86,7 +74,16 @@ class Payment(Base):
 class Database:
     """Асинхронная обертка для работы с базой данных"""
 
-    def __init__(self, database_url: str = "sqlite+aiosqlite:///filosof.db"):
+    def __init__(self, database_url: str = None):
+        # Если URL не указан, используем абсолютный путь к файлу в текущей директории
+        if database_url is None:
+            import os
+            # Получаем абсолютный путь к директории со скриптом
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            db_path = os.path.join(script_dir, "filosof.db")
+            database_url = f"sqlite+aiosqlite:///{db_path}"
+            logger.info(f"Путь к базе данных: {db_path}")
+
         self.database_url = database_url
         self.engine = create_async_engine(
             database_url,
@@ -102,7 +99,54 @@ class Database:
         """Инициализация базы данных"""
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            # Миграция: добавляем недостающие колонки если их нет
+            await conn.run_sync(self._migrate_chat_states_columns)
+
         logger.info("База данных инициализирована")
+
+        # Проверяем и логируем существование файла базы данных
+        if 'sqlite' in self.database_url:
+            import os
+            # Извлекаем путь к файлу из URL
+            db_file_path = self.database_url.replace('sqlite+aiosqlite:///', '')
+            if os.path.exists(db_file_path):
+                file_size = os.path.getsize(db_file_path)
+                logger.info(f"✅ Файл базы данных создан: {db_file_path} ({file_size} байт)")
+            else:
+                logger.warning(f"⚠️ Файл базы данных не найден по пути: {db_file_path}")
+                logger.warning(f"   Текущая рабочая директория: {os.getcwd()}")
+                # Ищем файлы .db в текущей директории
+                for root, dirs, files in os.walk(os.getcwd()):
+                    for file in files:
+                        if file.endswith('.db'):
+                            logger.warning(f"   Найден .db файл: {os.path.join(root, file)}")
+
+    def _migrate_chat_states_columns(self, conn):
+        """Миграция: добавление всех недостающих колонок в таблицу chat_states"""
+        from sqlalchemy import inspect, text
+
+        try:
+            inspector = inspect(conn)
+            existing_columns = [col['name'] for col in inspector.get_columns('chat_states')]
+            logger.info(f"Текущие колонки в chat_states: {existing_columns}")
+
+            # Определяем колонки, которые должны быть в таблице
+            required_columns = {
+                'last_request_date': 'DATETIME' if 'sqlite' in self.database_url else 'TIMESTAMP',
+                'bonus_requests': 'INTEGER DEFAULT 3'
+            }
+
+            # Добавляем недостающие колонки
+            for column_name, column_type in required_columns.items():
+                if column_name not in existing_columns:
+                    logger.info(f"Добавление колонки {column_name} в таблицу chat_states")
+                    conn.execute(text(f'ALTER TABLE chat_states ADD COLUMN {column_name} {column_type}'))
+                    logger.info(f"Колонка {column_name} успешно добавлена")
+                else:
+                    logger.debug(f"Колонка {column_name} уже существует")
+
+        except Exception as e:
+            logger.error(f"Ошибка при миграции таблицы chat_states: {e}")
 
     async def get_or_create_chat_state(self, chat_id: str, chat_type: str = 'private') -> ChatState:
         """Получить или создать состояние чата"""
@@ -230,42 +274,6 @@ class Database:
                 select(Payment).where(Payment.payment_id == payment_id)
             )
             return result.scalar_one_or_none()
-
-    async def get_global_schedule(self) -> Optional[GlobalSchedule]:
-        """Получить глобальное расписание"""
-        async with self.async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(
-                select(GlobalSchedule).limit(1)
-            )
-            return result.scalar_one_or_none()
-
-    async def update_global_schedule(self, next_publish_time: datetime = None,
-                                     next_generation_time: datetime = None):
-        """Обновить глобальное расписание"""
-        async with self.async_session() as session:
-            from sqlalchemy import select
-            result = await session.execute(select(GlobalSchedule).limit(1))
-            schedule = result.scalar_one_or_none()
-
-            if not schedule:
-                # Создаем новое расписание
-                schedule = GlobalSchedule(
-                    next_publish_time=next_publish_time,
-                    next_generation_time=next_generation_time
-                )
-                session.add(schedule)
-            else:
-                # Обновляем существующее
-                if next_publish_time is not None:
-                    schedule.next_publish_time = next_publish_time
-                if next_generation_time is not None:
-                    schedule.next_generation_time = next_generation_time
-                schedule.updated_at = datetime.utcnow()
-
-            await session.commit()
-            await session.refresh(schedule)
-            return schedule
 
     async def get_all_groups_and_channels(self) -> List[ChatState]:
         """Получить все активные группы и каналы (не приватные чаты)"""
